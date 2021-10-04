@@ -90,6 +90,10 @@ local requiredReplicas
 local availableReplicas
 for _ in $(seq 20); do
     requiredReplicas=$(kubectl get deployment "$1" -n "$2" -o jsonpath='{.spec.replicas}')
+    if [[ ${requiredReplicas} == 0 ]]; then
+        deployed=true
+        break
+    fi
     availableReplicas=$(kubectl get deployment "$1" -n "$2" -o jsonpath='{.status.availableReplicas}')
     if [[ ${availableReplicas} == "${requiredReplicas}" ]]; then
         deployed=true
@@ -212,5 +216,9 @@ EOF
 
 echo -e "Patching vSphere CSI driver.."
 kubectl patch deployment vsphere-csi-controller -n vmware-system-csi --patch "$(cat "${tmpdir}"/patch.yaml)"
+kubectl scale deployment vsphere-csi-controller --replicas=0 -n vmware-system-csi
+wait_for_deployment vsphere-csi-controller vmware-system-csi
+kubectl scale deployment vsphere-csi-controller --replicas=1 -n vmware-system-csi
+wait_for_deployment vsphere-csi-controller vmware-system-csi
 echo -e "✅ Successfully patched vSphere CSI driver, please wait till deployment is updated.."
 echo -e "\n✅ Successfully deployed all components for CSI Snapshot feature.\n"
