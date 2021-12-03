@@ -71,6 +71,8 @@ import (
 	fpod "k8s.io/kubernetes/test/e2e/framework/pod"
 	fpv "k8s.io/kubernetes/test/e2e/framework/pv"
 	fssh "k8s.io/kubernetes/test/e2e/framework/ssh"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apiserver/pkg/storage/names"
 
 	cnsoperatorv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v2/pkg/apis/cnsoperator"
 	cnsfileaccessconfigv1alpha1 "sigs.k8s.io/vsphere-csi-driver/v2/pkg/apis/cnsoperator/cnsfileaccessconfig/v1alpha1"
@@ -695,6 +697,86 @@ func randomPickPVC() *v1.PersistentVolumeClaim {
 	pvclaims = pvclaims[:len(pvclaims)-1]
 	framework.Logf("pvc to delete %v", pvclaimToDelete.Name)
 	return pvclaimToDelete
+}
+
+
+// function to generate a snapshot class structure
+func GenerateSnapshotClassSpec(
+	snapshotter string,
+	// parameters map[string]string,
+	ns string,
+	suffix string,) *unstructured.Unstructured {
+	snapshotClass := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"kind":       "VolumeSnapshotClass",
+			"apiVersion": SnapshotAPIVersion,
+			"metadata": map[string]interface{}{
+				// Name must be unique, so let's base it on namespace name and use GenerateName
+				// TODO(#96234): Remove unnecessary suffix.
+				"name": names.SimpleNameGenerator.GenerateName(ns + "-" + suffix),
+			},
+			"driver":         snapshotter,
+			// "parameters":     parameters,
+			"deletionPolicy": "Delete",
+		},
+	}
+
+	return snapshotClass
+}
+
+// function to create a volume snapshotclass for vsphere-csi-driver
+func createVolumeSnapshotClass(snapshotClassName string) {
+	SnapshotClassGVR := schema.GroupVersionResource{Group: SnapshotGroup, Version: "v1", Resource: "volumesnapshotclasses"}
+	k8senv := GetAndExpectStringEnvVar("KUBECONFIG")
+	cfg, err := clientcmd.BuildConfigFromFlags("", k8senv)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+	snapshotClass = GenerateSnapshotClassSpec("csi.vsphere.vmware.com", "default", "test-sc")
+
+	sclass, err = dynamicClient.Resource(SnapshotClassGVR).Create(context.TODO(), snapshotClass, metav1.CreateOptions{})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	
+}
+
+// function to create a snapshotclass and create/delete snapshot provided a pvc 
+func createDeleteSnapshot(claimName string, ns, snapshotClassName string, snapshotName string) *unstructured.Unstructured {
+	snapshot := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"kind":       "VolumeSnapshot",
+			"apiVersion": "snapshot.storage.k8s.io/v1",
+			"metadata": map[string]interface{}{
+				"generateName": snapshotName,
+				"namespace":    ns,
+			},
+			"spec": map[string]interface{}{
+				"volumeSnapshotClassName": snapshotClassName,
+				"source": map[string]interface{}{
+					"persistentVolumeClaimName": claimName,
+				},
+			},
+		},
+	}
+	SnapshotGVR := schema.GroupVersionResource{Group: SnapshotGroup, Version: "v1", Resource: "volumesnapshots"}
+	// SnapshotClassGVR := schema.GroupVersionResource{Group: SnapshotGroup, Version: "v1", Resource: "volumesnapshotclasses"}
+	k8senv := GetAndExpectStringEnvVar("KUBECONFIG")
+	cfg, err := clientcmd.BuildConfigFromFlags("", k8senv)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	dynamicClient, err := dynamic.NewForConfig(cfg)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	//resourceClient := dynamicClient.Resource(gvr).Namespace("")
+	//list, err := resourceClient.List(ctx, metav1.ListOptions{})
+	//sclass, err = dynamicClient.Resource(SnapshotClassGVR).Create(context.TODO(), snapshotClassName, metav1.CreateOptions{})
+	//framework.ExpectNoError(err)
+	snapshot, err = dynamicClient.Resource(SnapshotGVR).Namespace(ns).Create(context.TODO(), snapshot, metav1.CreateOptions{})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	time.Sleep(100 * time.Second)
+	//snapshot, err = dynamicClient.Resource(gvr).Namespace(ns).Delete(context.TODO(), snapshot, metav1.CreateOptions{})
+	err = dynamicClient.Resource(SnapshotGVR).Namespace(ns).Delete(context.TODO(), snapshot.GetName(), metav1.DeleteOptions{})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	return snapshot
 }
 
 // createStatefulSetWithOneReplica helps create a stateful set with one replica.
